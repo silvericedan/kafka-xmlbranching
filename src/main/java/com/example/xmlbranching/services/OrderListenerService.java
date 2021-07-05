@@ -26,11 +26,14 @@ import java.io.StringReader;
 @EnableBinding(OrderListenerBinding.class)
 public class OrderListenerService {
 
+    //This two lines are reading the error topic name config from application.yaml
     @Value("${application.configs.error.topic.name}")
     private String ERROR_TOPIC;
 
-    @StreamListener("xml-input-channel")
-    @SendTo({"india-orders-channel", "abroad-orders-channel"})
+    @StreamListener("xml-input-channel") //We define the input channel for THIS listener
+    @SendTo({"india-orders-channel", "abroad-orders-channel"}) //Then we define two output channels for THIS listener
+    //We return an array of KStream, we will return two streams, and the Spring Framework will send
+    //the first element of the array to india-orders and the second to abroad orders
     public KStream<String, Order>[] process(KStream<String, String> input) {
 
         input.foreach((k, v) -> log.info(String.format("Received XML Order Key: %s, Value: %s", k, v)));
@@ -43,21 +46,27 @@ public class OrderListenerService {
                 JAXBContext jaxbContext = JAXBContext.newInstance(Order.class);
                 Unmarshaller jaxbUnmarshaller = jaxbContext.createUnmarshaller();
 
+                //if the order is valid, we tag it with VALID_ORDER
                 orderEnvelop.setValidOrder((Order) jaxbUnmarshaller.unmarshal(new StringReader(value)));
                 orderEnvelop.setOrderTag(AppConstants.VALID_ORDER);
 
+                //if the address is missing, we tag with ADDRESS_ERROR
                 if(orderEnvelop.getValidOrder().getShipTo().getCity().isEmpty()){
                     log.error("Missing destination City");
                     orderEnvelop.setOrderTag(AppConstants.ADDRESS_ERROR);
                 }
 
             } catch (JAXBException e) {
+                //if the Unmarshalled fails, we tag with PARSE_ERROR
                 log.error("Failed to Unmarshal the incoming XML");
                 orderEnvelop.setOrderTag(AppConstants.PARSE_ERROR);
             }
+            //we return a key value pair, and we transformed the xml order to an OrderEnvelop
             return KeyValue.pair(orderEnvelop.getOrderTag(), orderEnvelop);
         });
-
+        //we filter for invalid orders and we send them to the ERROR_TOPIC using the to() method
+        //also, we define a Serde configuration here in Produced.with(key,value) to define this custom scenario
+        //we define a custom serde because we dont have a channel for the error-topic
         orderEnvelopKStream.filter((k, v) -> !k.equalsIgnoreCase(AppConstants.VALID_ORDER))
                 .to(ERROR_TOPIC, Produced.with(AppSerdes.String(), AppSerdes.OrderEnvelop()));
 
@@ -67,6 +76,10 @@ public class OrderListenerService {
 
         validOrders.foreach((k, v) -> log.info(String.format("Valid Order with ID: %s", v.getOrderId())));
 
+        //the valid orders split into two streams, one for india and other for abroad
+        //we can do that split using the branch method, it takes comma separated list of predicates.
+        //the predicates return a boolean. We need two branches so we pass two predicates, but it can
+        //be passed 3 or 5 branches/predicates.
         Predicate<String, Order> isIndiaOrder = (k, v) -> v.getShipTo().getCountry().equalsIgnoreCase("india");
         Predicate<String, Order> isAbroadOrder = (k, v) -> !v.getShipTo().getCountry().equalsIgnoreCase("india");
 
